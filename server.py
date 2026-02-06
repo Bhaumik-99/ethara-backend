@@ -1,4 +1,4 @@
-from fastapi import FastAPI, APIRouter, HTTPException
+from fastapi import FastAPI, APIRouter, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 import os
@@ -14,9 +14,6 @@ from typing import Optional
 app = FastAPI(title="Ethara.AI HRMS API")
 
 # ------------------ CORS (FINAL FIX) ------------------
-# IMPORTANT:
-# 1. Explicit origin (no "*")
-# 2. CORS middleware MUST be added before routes
 
 ALLOWED_ORIGINS = os.environ.get(
     "CORS_ORIGINS",
@@ -105,7 +102,7 @@ class AttendanceRecord(BaseModel):
     status: str
     marked_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
-# ------------------ EMPLOYEE APIs ------------------
+# ------------------ EMPLOYEE APIs (FIXED) ------------------
 
 @api_router.post("/employees")
 async def create_employee(emp: EmployeeCreate):
@@ -120,9 +117,31 @@ async def create_employee(emp: EmployeeCreate):
     return employee
 
 
+# ✅ FIXED: Now accepts search and department parameters
 @api_router.get("/employees")
-async def get_employees():
-    return await db.employees.find({}, {"_id": 0}).to_list(1000)
+async def get_employees(
+    search: Optional[str] = None, 
+    department: Optional[str] = None
+):
+    # 1. Start with an empty query
+    query = {}
+
+    # 2. Add Department Filter
+    if department and department.lower() != "all":
+        query["department"] = department
+
+    # 3. Add Search Filter (Regex for Name, Email, or ID)
+    if search:
+        # "i" option makes it case-insensitive
+        search_regex = {"$regex": search, "$options": "i"}
+        query["$or"] = [
+            {"full_name": search_regex},
+            {"email": search_regex},
+            {"employee_id": search_regex}
+        ]
+
+    # 4. Run the query
+    return await db.employees.find(query, {"_id": 0}).to_list(1000)
 
 
 @api_router.delete("/employees/{employee_id}")
