@@ -13,8 +13,10 @@ from typing import Optional
 
 app = FastAPI(title="Ethara.AI HRMS API")
 
-# ------------------ CORS (FIXED) ------------------
-# IMPORTANT: Explicit origin, no "*"
+# ------------------ CORS (FINAL FIX) ------------------
+# IMPORTANT:
+# 1. Explicit origin (no "*")
+# 2. CORS middleware MUST be added before routes
 
 ALLOWED_ORIGINS = os.environ.get(
     "CORS_ORIGINS",
@@ -23,7 +25,7 @@ ALLOWED_ORIGINS = os.environ.get(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=ALLOWED_ORIGINS,
+    allow_origins=[origin.strip() for origin in ALLOWED_ORIGINS],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -108,10 +110,10 @@ class AttendanceRecord(BaseModel):
 @api_router.post("/employees")
 async def create_employee(emp: EmployeeCreate):
     if await db.employees.find_one({"employee_id": emp.employee_id}):
-        raise HTTPException(409, "Employee ID already exists")
+        raise HTTPException(status_code=409, detail="Employee ID already exists")
 
     if await db.employees.find_one({"email": emp.email}):
-        raise HTTPException(409, "Email already exists")
+        raise HTTPException(status_code=409, detail="Email already exists")
 
     employee = Employee(**emp.model_dump())
     await db.employees.insert_one(employee.model_dump())
@@ -127,7 +129,8 @@ async def get_employees():
 async def delete_employee(employee_id: str):
     result = await db.employees.delete_one({"employee_id": employee_id})
     if result.deleted_count == 0:
-        raise HTTPException(404, "Employee not found")
+        raise HTTPException(status_code=404, detail="Employee not found")
+
     await db.attendance.delete_many({"employee_id": employee_id})
     return {"message": "Employee deleted"}
 
@@ -136,7 +139,7 @@ async def delete_employee(employee_id: str):
 @api_router.post("/attendance")
 async def mark_attendance(att: AttendanceCreate):
     if not await db.employees.find_one({"employee_id": att.employee_id}):
-        raise HTTPException(404, "Employee not found")
+        raise HTTPException(status_code=404, detail="Employee not found")
 
     record = AttendanceRecord(**att.model_dump())
     await db.attendance.insert_one(record.model_dump())
@@ -148,7 +151,7 @@ async def get_attendance(employee_id: Optional[str] = None):
     query = {"employee_id": employee_id} if employee_id else {}
     return await db.attendance.find(query, {"_id": 0}).to_list(5000)
 
-# ------------------ DASHBOARD ------------------
+# ------------------ DASHBOARD (SAFE) ------------------
 
 @api_router.get("/dashboard")
 async def dashboard():
@@ -157,14 +160,14 @@ async def dashboard():
     total_employees = await db.employees.count_documents({})
     today_records = await db.attendance.find({"date": today}).to_list(5000)
 
-    present = sum(1 for r in today_records if r["status"] == "Present")
-    absent = sum(1 for r in today_records if r["status"] == "Absent")
+    present = sum(1 for r in today_records if r.get("status") == "Present")
+    absent = sum(1 for r in today_records if r.get("status") == "Absent")
 
     return {
         "total_employees": total_employees,
         "present_today": present,
         "absent_today": absent,
-        "unmarked_today": total_employees - present - absent,
+        "unmarked_today": max(total_employees - present - absent, 0),
     }
 
 # ------------------ HEALTH ------------------
