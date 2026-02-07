@@ -45,7 +45,9 @@ MONGO_URL = os.environ.get("MONGO_URL")
 DB_NAME = os.environ.get("DB_NAME", "ethara_db")
 
 if not MONGO_URL:
-    raise RuntimeError("MONGO_URL environment variable is not set!")
+    # Fallback for local testing if env is missing (Optional)
+    print("WARNING: MONGO_URL not found, using default localhost.")
+    MONGO_URL = "mongodb://localhost:27017"
 
 client = AsyncIOMotorClient(MONGO_URL)
 db = client[DB_NAME]
@@ -137,7 +139,6 @@ async def get_employees(
     search: Optional[str] = None, 
     department: Optional[str] = None
 ):
-    # ✅ FIX: Dynamic Query Construction
     query = {}
 
     # Filter by Department
@@ -153,7 +154,8 @@ async def get_employees(
             {"employee_id": search_regex}
         ]
 
-    return await db.employees.find(query, {"_id": 0}).to_list(1000)
+    employees = await db.employees.find(query, {"_id": 0}).to_list(1000)
+    return employees
 
 
 @api_router.delete("/employees/{employee_id}")
@@ -174,7 +176,7 @@ async def mark_attendance(att: AttendanceCreate):
     if not await db.employees.find_one({"employee_id": att.employee_id}):
         raise HTTPException(status_code=404, detail="Employee not found")
 
-    # ✅ FIX: Check for existing record (Upsert Logic)
+    # Check for existing record (Upsert Logic)
     existing_record = await db.attendance.find_one({
         "employee_id": att.employee_id,
         "date": att.date
@@ -192,7 +194,7 @@ async def mark_attendance(att: AttendanceCreate):
             }
         )
         # Return updated structure
-        return {**existing_record, "status": att.status, "message": "Attendance updated"}
+        return {**existing_record, "status": att.status, "message": "Attendance updated", "id": str(existing_record.get("id"))}
     
     else:
         # Create new
@@ -206,7 +208,7 @@ async def get_attendance(employee_id: Optional[str] = None):
     query = {"employee_id": employee_id} if employee_id else {}
     return await db.attendance.find(query, {"_id": 0}).to_list(5000)
 
-# ------------------ DASHBOARD API ------------------
+# ------------------ DASHBOARD API (FIXED) ------------------
 
 @api_router.get("/dashboard")
 async def dashboard():
@@ -214,35 +216,40 @@ async def dashboard():
 
     # 1. Basic Counts
     total_employees = await db.employees.count_documents({})
-    today_records = await db.attendance.find({"date": today}).to_list(5000)
-
+    
+    # Get today's attendance records
+    today_records = await db.attendance.find({"date": today}).to_list(length=1000)
+    
     present = sum(1 for r in today_records if r.get("status") == "Present")
     absent = sum(1 for r in today_records if r.get("status") == "Absent")
 
-    # 2. ✅ FIX: Department Breakdown
+    # 2. Department Breakdown
+    # Using explicit length instead of None to ensure compatibility
     pipeline = [
         {"$group": {"_id": "$department", "count": {"$sum": 1}}}
     ]
-    dept_counts = await db.employees.aggregate(pipeline).to_list(None)
+    dept_counts = await db.employees.aggregate(pipeline).to_list(length=100)
     
-    # Convert to frontend-friendly dictionary
-    department_breakdown = {item["_id"]: item["count"] for item in dept_counts}
+    department_breakdown = {
+        (item["_id"] if item["_id"] else "Unassigned"): item["count"] 
+        for item in dept_counts
+    }
 
-    # 3. ✅ FIX: Recent Activity
-    # Fetch last 5 attendance records, sorted by time descending
-    recent_activity_cursor = db.attendance.find().sort("marked_at", -1).limit(5)
-    recent_logs = []
+    # 3. Recent Activity
+    # Fixed sort syntax: .sort([("field", direction)])
+    recent_activity_cursor = db.attendance.find().sort([("marked_at", -1)]).limit(5)
     
+    recent_logs = []
     async for record in recent_activity_cursor:
         # Get employee name
         emp = await db.employees.find_one({"employee_id": record["employee_id"]})
         name = emp["full_name"] if emp else "Unknown"
         
         recent_logs.append({
-            "id": str(record["_id"]),
-            "action": f"Marked {record['status']}",
+            "id": str(record.get("_id")),
+            "action": f"Marked {record.get('status')}",
             "employee": name,
-            "time": record["marked_at"]
+            "time": record.get("marked_at")
         })
 
     return {
